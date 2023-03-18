@@ -1,0 +1,263 @@
+#!/usr/bin/env python
+# coding: utf-8
+
+# In[239]:
+
+
+# Import relevant packages
+import os
+import numpy as np
+from astropy.io import fits
+import matplotlib.pyplot as plt
+from matplotlib.colors import LogNorm
+from skimage.feature import peak_local_max
+from skimage.segmentation import watershed
+from scipy import ndimage
+plt.rcParams['figure.figsize'] = (5, 5)
+
+
+# # Open cluster NGC 2141
+# 
+
+# ### Part 1: Photometry
+
+# Three parameters to adjust to get the best results:
+# * Threshold: number of std dev above the background; a local max must be counted as a star. The low the value will pick up most stars, but also prone to possible false detections.
+# * minRadius - Stars near the center of the cluster are very close together and bleed into one another. This makes it very difficult to find the flix since they contaminated by neighbours. I will model each star as a guassian and find the combination of normalizations that minimizes the residuals. Only detect stars that occur at pixel coordinates greater than minRadious. 500 - 1500 pixels.
+# * minSNRatio - minimum signal to noiseratio (S/N) of a star for it to be included in HR diagram. S/N is a flux count (S) divided by the uncertainty in their count (N)
+
+# #### Step 1: Measuring the background
+
+# In[240]:
+
+
+# define backgorund measuring functions
+def measureBG(image, mask=None, poissonStats=False, boxsize=65,
+             minDataSize=1000):
+    """ Find average background using signma clipping method.
+    
+    Args: 
+        image: 2D nparray for which a bkg map should be found.
+        poissonStats: If presnt, Poisson stastistics are used instead of Gaussian.
+        boxsize: size of box in which bkg is found thoughout the image. Should be odd.
+        minDataSize: the minimum number of data points to consider.
+        
+    Returns:
+        avgBG: agverage bkg value over the whole image.
+        avgErr: the rms uncertainty in agvBG
+    """
+    
+    if boxsize%2 == 0:
+        boxsize += 1
+    
+    data = image
+    
+    #find avg bkg value and error
+    avgBG, avgErr = sigmaClip(data)
+    if poissonStats:
+        avgBG = avgErr**2
+        
+    return avgBG, avgErr
+
+
+def sigmaClip(data, sigma=3.0, cenfunc=np.median):
+    """ SigmaClipping Method is a method of outlier rejection 
+    where data are rejected if more than a certain number of std dev 
+    from th sample's mean.
+    
+        Agrs: 
+            data: a nparray of the data
+            sigma: std dev from the mean of avgBG distribution
+            cenfunc: Opt choice to find the center of the data.
+            
+        Returns: mean and std dev of the clipped data
+    """
+    
+    #Ravel data if not 1-D arr
+    data = data.ravel()
+    clipping = np.ones(data.size, bool)
+    lastCount = 0
+    while(np.sum(clipping) != lastCount):
+        lastCount = np.sum(clipping)
+        if (cenfunc == np.mean):
+            diff = data - cenfunc(data[clipping], dtype=np.float64)
+        else:
+            diff = data - cenfunc(data[clipping])
+        
+        diff = np.abs(diff)
+        clipping = (diff <= np.std(data[clipping], dtype=np.float64)
+                   * sigma)
+        
+    mean = np.mean(data[clipping], dtype=np.float64)
+    std = np.std(data[clipping], dtype=np.float64)
+    return mean, std
+           
+        
+            
+    
+
+
+# In[241]:
+
+
+# Read data from fits file: V and R filters
+R = fits.getdata("/Users/tranghuynh/Dropbox/LSU/Fall_2022/ASTR4750/prog5/ngc2141_Mar28-003R.fit")
+V = fits.getdata("/Users/tranghuynh/Dropbox/LSU/Fall_2022/ASTR4750/prog5/ngc2141_Mar28-003V.fit")
+print(np.shape(R))
+print(np.shape(V))
+
+
+# In[242]:
+
+
+# Show images
+plt.figure()
+plt.title("NGC 2141: R Filter")
+plt.imshow(R, interpolation='nearest', cmap='gray',
+           norm=LogNorm(vmin=1150, vmax=1500))
+plt.colorbar()
+
+plt.figure()
+plt.title("NGC 2141: V Filter")
+plt.imshow(V, interpolation='nearest', cmap='gray',
+           norm=LogNorm(vmin=350, vmax=450))
+plt.colorbar()
+
+
+# In[243]:
+
+
+# Calculate background
+R_bg, R_err = measureBG(R[500:, 500:])
+print("B background per pixel: %1.2f +/- %1.2f" % (R_bg, B_err))
+V_bg, V_err = measureBG(V[500:, 500:])
+print("V background per pixel: %1.2f +/- %1.2f" % (V_bg, V_err))
+
+
+# ### Step 2: Detecting Stars
+
+# * We use a peak finding algorithm that picks up peaks in random noise and labels them as stars
+# * To identify stars, limit the peaks that are a certain thresfold above the noise. Adjust minRadius to only find stars a certain minimum radius away from the center
+# 
+# * Adjust the threshold and minRadius 
+
+# In[244]:
+
+
+####### TO BE CHANGED ##########################
+minRadius = 300 # bc this is an open cluster, the stars distribute evently 
+                #rather than in the center of the cluster. Thus I choose 
+                # a small minRadius
+threshold = 20.0 # number of sigmas above background needed for detection
+#########################################################################
+
+plt.rcParams['figure.figsize'] = (12, 8)
+
+# Find peaks
+xx, yy = np.ogrid[0:V.shape[0], 0:V.shape[1]]
+r = np.sqrt(xx**2 + yy**2)
+meas_V = V + 0.0
+meas_V[r < minRadius] = V_bg
+minLevel = V_bg + threshold * V_err
+localMax = peak_local_max(meas_V, threshold_abs = minLevel,indices=False)
+Nstars = np.sum(localMax)
+print("Number of stars detected: ", Nstars)
+localMaxDex = peak_local_max(meas_V, threshold_abs=minLevel)
+
+
+# In[248]:
+
+
+plt.rcParams['figure.figsize'] = (5, 5)
+####### TO BE CHANGED ##########################
+zoomCoord = [1700,1700]
+#########################################################################
+
+fig,ax1 = plt.subplots(1)
+ax1.imshow(meas_V, interpolation='nearest', cmap='gray', 
+          norm=LogNorm(vmin=350, vmax=450))
+ax1.scatter(localMaxDex.T[1], localMaxDex.T[0], s=5, color='r')
+
+
+# ### Step 3: Segmenting Stars
+
+# * Use watershed algorithm to determine which pixels belong to which star. 
+# * Determine the total flux of each star by adding up the flux in all the pixels and subtracting the background. 
+
+# In[250]:
+
+
+# segment image
+# Now we want to separate the two objects in image
+# Generate the markers as local maxima of the distance to the background
+markers = ndimage.label(localMax)[0]
+mask = meas_V > V_bg + V_err
+labels = watershed(-V, markers, mask=mask)
+
+# sum flux in each star and subtract the background flux
+index = np.arange(1, np.max(labels) + 1)
+Vcount = ndimage.sum(V - V_bg, labels, index=index)
+Rcount = ndimage.sum(R - R_bg, labels, index=index)
+numpix = ndimage.sum(labels > 0, labels, index=index)
+print("Fluxes calculated for ", Nstars, " stars")
+
+
+# #### Step 4: Creating a HR Diagram 
+
+# * Perform further improvement to attempt to exclude these false detections of stars. We use a minimum SNR, below which we exclude the flux measurements.
+# 
+# * Adjust minSNRatio param until the HR diagram appears not to be noisy. Should be able to clearly see a MS and RGB. 
+
+# In[247]:
+
+
+#######################################################
+minSNRatio = 5.0 
+#######################################################
+
+
+# remove any objects with negative fluxes
+positiveCount = np.logical_and(Vcount > 0, Rcount > 0)
+Vcount = Vcount[positiveCount]
+Rcount = Rcount[positiveCount]
+numpix = numpix[positiveCount]
+
+
+# remove cosmic rays by setting minimum pixelcount
+Vcount = Vcount[numpix >= 25]
+Rcount = Rcount[numpix >= 25]
+numpix = numpix[numpix >= 25]
+print(np.shape(Vcount))
+print(np.shape(Rcount))
+
+
+# convert to magnitudes
+# note the zeropoints were calibrated using reference stars
+Vmag = -2.5 * np.log10(Vcount) + 26.44
+Rmag = -2.5 * np.log10(Rcount) + 25.72
+
+# find the total noise and signal to noise ratio for each star
+Vnoise = np.sqrt(Vcount + numpix * V_err**2)
+Rnoise = np.sqrt(Rcount + numpix * R_err**2)
+VSN = Vcount / Vnoise
+RSN = Rcount / Rnoise
+
+# limit analysis to stars with good S/N
+goodstars = np.logical_and(VSN >= minSNRatio, RSN >= minSNRatio)
+print("Number of stars plotted: ", np.sum(goodstars))
+
+# plot HR diagram
+plt.rcParams['figure.figsize'] = (8, 8)
+plt.figure()
+plt.gca().invert_yaxis()
+# plt.xlim(-0.2,0.2)
+plt.plot(Vmag[goodstars] - Rmag[goodstars], Vmag[goodstars], 'o', markersize=2)
+plt.xlabel(' V-R')
+plt.ylabel('V')
+
+
+# In[ ]:
+
+
+
+
